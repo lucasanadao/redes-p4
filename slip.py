@@ -1,3 +1,5 @@
+import traceback
+
 class CamadaEnlace:
     ignore_checksum = False
 
@@ -43,6 +45,13 @@ class Enlace:
     def __init__(self, linha_serial):
         self.linha_serial = linha_serial
         self.linha_serial.registrar_recebedor(self.__raw_recv)
+        self.callback = None
+        self.buffer = b''
+        # Constantes do protocolo SLIP
+        self.END = b'\xc0'
+        self.ESC = b'\xdb'
+        self.ESC_END = b'\xdc'
+        self.ESC_ESC = b'\xdd'
 
     def registrar_recebedor(self, callback):
         self.callback = callback
@@ -51,7 +60,16 @@ class Enlace:
         # TODO: Preencha aqui com o código para enviar o datagrama pela linha
         # serial, fazendo corretamente a delimitação de quadros e o escape de
         # sequências especiais, de acordo com o protocolo CamadaEnlace (RFC 1055).
-        pass
+        
+        # Passo 2: Faz o "byte stuffing" para escapar os caracteres especiais.
+        # A ordem é importante para não escapar os bytes de escape recém-adicionados.
+        datagrama_escapado = datagrama.replace(self.ESC, self.ESC + self.ESC_ESC)
+        datagrama_escapado = datagrama_escapado.replace(self.END, self.ESC + self.ESC_END)
+
+        # Passo 1: Delimita o quadro com o byte END no início e no fim.
+        quadro_a_enviar = self.END + datagrama_escapado + self.END
+
+        self.linha_serial.enviar(quadro_a_enviar)
 
     def __raw_recv(self, dados):
         # TODO: Preencha aqui com o código para receber dados da linha serial.
@@ -61,4 +79,32 @@ class Enlace:
         # vir quebrado de várias formas diferentes - por exemplo, podem vir
         # apenas pedaços de um quadro, ou um pedaço de quadro seguido de um
         # pedaço de outro, ou vários quadros de uma vez só.
-        pass
+        
+        self.buffer += dados
+        
+        # Passo 3: Usa o byte END para encontrar os quadros completos no buffer.
+        quadros = self.buffer.split(self.END)
+        
+        # O último elemento de 'quadros' é o que veio depois do último END,
+        # ou seja, um quadro incompleto. Ele se torna o novo buffer.
+        self.buffer = quadros[-1]
+        
+        # Processa cada quadro completo que foi recebido.
+        for quadro in quadros[:-1]:
+            # Ignora quadros vazios (gerados por sequências ...END-END...)
+            if not quadro:
+                continue
+
+            # Passo 5: Usa um bloco try-except para lidar com erros na camada superior.
+            try:
+                # Passo 4: Reverte o "byte stuffing" (unstuffing).
+                datagrama = quadro.replace(self.ESC + self.ESC_END, self.END)
+                datagrama = datagrama.replace(self.ESC + self.ESC_ESC, self.ESC)
+                
+                # Se o callback estiver registrado, envia o datagrama "limpo".
+                if self.callback:
+                    self.callback(datagrama)
+            except:
+                # Se ocorrer um erro, imprime o traceback mas não trava o programa,
+                # apenas descarta o quadro problemático.
+                traceback.print_exc()
